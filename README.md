@@ -85,3 +85,5 @@ for the tools and patterns this prototype builds around.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Additional attribution and project expectations are in [NOTICE.md](NOTICE.md).
