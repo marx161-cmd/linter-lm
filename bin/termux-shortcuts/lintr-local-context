@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Termux:Widget shortcut — toggle context injection on local instance.
 # Copy to ~/.shortcuts/ on the Pixel.
-curl -sf -X POST https://comrade.taile6163a.ts.net:8451/lintr/features/context > /dev/null \
+curl -sf -X POST https://comrade.taile6163a.ts.net:8453/lintr/features/context > /dev/null \
     || { printf 'LINTR-LOCAL:DOWN\n'; exit 1; }
-curl -sf https://comrade.taile6163a.ts.net:8451/lintr/features/oneline
+curl -sf https://comrade.taile6163a.ts.net:8453/lintr/features/oneline
 printf '\n'

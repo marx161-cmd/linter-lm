@@ -110,9 +110,10 @@ bash bin/tailscale-setup.sh
 This registers:
 
 ```
-https://comrade.taile6163a.ts.net:8451  →  local   (Ollama,   port 8099)
+https://comrade.taile6163a.ts.net:8453  →  local   (Ollama,   port 8099)
 https://comrade.taile6163a.ts.net:8452  →  deepseek (DeepSeek, port 8098)
 ```
+Note: `:8451` is reserved for `homelab-mcp-hub`.
 
 Point SillyTavern, Open WebUI, or any OpenAI-compatible client at either URL.
 
