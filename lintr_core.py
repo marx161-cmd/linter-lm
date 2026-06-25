@@ -321,6 +321,7 @@ class LintrEngine:
         self.detector = DegradationDetector()
         self.scrambler = SamplerScrambler(intensity)
         self.tool_linter = ToolJsonLinter()
+        self.tool_repair_enabled: bool = True
 
     def state_for(self, session_id: str) -> SessionState:
         return self.sessions.setdefault(session_id, SessionState())
@@ -362,6 +363,8 @@ class LintrEngine:
 
     def lint_final_text(self, session_id: str, text: str) -> str:
         self.observe_delta(session_id, text)
+        if not self.tool_repair_enabled:
+            return text
         repaired, intervention = self.tool_linter.lint_text(text)
         if intervention:
             self.state_for(session_id).record(intervention)

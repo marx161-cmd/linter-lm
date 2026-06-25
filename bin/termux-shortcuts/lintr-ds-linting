@@ -1,0 +1,7 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Termux:Widget shortcut — cycle linting intensity on DeepSeek instance.
+# Copy to ~/.shortcuts/ on the Pixel.
+curl -sf -X POST https://comrade.taile6163a.ts.net:8452/lintr/features/linting > /dev/null \
+    || { printf 'LINTR-DS:DOWN\n'; exit 1; }
+curl -sf https://comrade.taile6163a.ts.net:8452/lintr/features/oneline
+printf '\n'

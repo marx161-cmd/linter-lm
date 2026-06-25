@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Cycle linting intensity: off → mild → medium → high → off (live, no restart).
+# Usage: lintr-toggle-linting [local|deepseek|<url>]
+_url() {
+    if [ -n "$LINTR_CTL_URL" ]; then printf '%s' "$LINTR_CTL_URL"; return; fi
+    case "${1:-local}" in
+        local|l)     printf 'http://127.0.0.1:8099' ;;
+        deepseek|ds) printf 'http://127.0.0.1:8098' ;;
+        *)           printf '%s' "$1" ;;
+    esac
+}
+URL=$(_url "$1")
+curl -sf -X POST "${URL}/lintr/features/linting" > /dev/null || { printf 'LINTR: not reachable\n'; exit 1; }
+curl -sf "${URL}/lintr/features/oneline"
+printf '\n'

@@ -1,0 +1,14 @@
+[Unit]
+Description=LinteR-LM proxy — local Ollama backend (port 8099)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/homelab/linter-lm
+EnvironmentFile=%h/homelab/linter-lm/.env.local
+ExecStart=%h/homelab/linter-lm/.venv/bin/python server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

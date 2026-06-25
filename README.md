@@ -69,36 +69,95 @@ guarantees, or a stable roadmap from the original author.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt httpx pydantic onnx
+pip install -r requirements.txt
 
-LINTR_BACKEND_URL=http://127.0.0.1:11434 \
-LINTR_HOST=127.0.0.1 \
-LINTR_PORT=8099 \
-python server.py
+cp .env.local.example .env.local
+# edit .env.local if needed, then:
+source .env.local && python server.py
 ```
 
-Point clients at:
+Point clients at `http://127.0.0.1:8099/v1`. The proxy forwards all `/v1/*`
+traffic to `${LINTR_BACKEND_URL}`.
 
-```text
-http://127.0.0.1:8099/v1
+## Multi-Instance Setup (Local + Remote APIs)
+
+Run two independent instances — one for a local Ollama/llama.cpp stack and one
+for a remote API such as DeepSeek — on separate ports, each with its own
+feature flags.
+
+### 1. Create env files
+
+```bash
+cp .env.local.example    .env.local      # Ollama, port 8099, full features
+cp .env.deepseek.example .env.deepseek   # DeepSeek, port 8098, context off
+# edit .env.deepseek → set LINTR_BACKEND_API_KEY=sk-...
 ```
 
-The proxy forwards to:
+### 2. Install systemd user services
 
-```text
-${LINTR_BACKEND_URL}/v1/chat/completions
-${LINTR_BACKEND_URL}/v1/models
-${LINTR_BACKEND_URL}/v1/*
+```bash
+bash systemd/install.sh
+systemctl --user enable --now linter-lm-local
+systemctl --user enable --now linter-lm-deepseek
 ```
+
+### 3. Expose via Tailscale serve (tailnet-only HTTPS)
+
+```bash
+bash bin/tailscale-setup.sh
+```
+
+This registers:
+
+```
+https://comrade.taile6163a.ts.net:8451  →  local   (Ollama,   port 8099)
+https://comrade.taile6163a.ts.net:8452  →  deepseek (DeepSeek, port 8098)
+```
+
+Point SillyTavern, Open WebUI, or any OpenAI-compatible client at either URL.
+
+### 4. Control scripts
+
+All bin scripts take an optional instance argument (`local` default, `deepseek`
+or any raw URL). `LINTR_CTL_URL` overrides the argument entirely.
+
+```bash
+# from comrade (i3 status bar, keybindings)
+lintr-status               # CTX:on LINT:mild REPAIR:on  (local)
+lintr-status deepseek      # CTX:off LINT:mild REPAIR:on (deepseek)
+lintr-toggle-linting       # cycle local instance: off→mild→medium→high→off
+lintr-toggle-linting ds    # cycle deepseek instance
+lintr-toggle-context       # toggle context inject on local
+lintr-toggle-repair ds     # toggle JSON repair on deepseek
+```
+
+### 5. Termux shortcuts (Pixel)
+
+Scripts in `bin/termux-shortcuts/` hit the Tailscale serve HTTPS URLs directly
+— no SSH needed. Copy them to `~/.shortcuts/` on the Pixel and add via
+Termux:Widget.
+
+```bash
+# on comrade — push to phone over ADB or Syncthing
+adb push bin/termux-shortcuts/lintr-local-linting \
+         /data/data/com.termux/files/home/.shortcuts/
+```
+
+Available shortcuts: `lintr-local-status`, `lintr-ds-status`,
+`lintr-local-linting`, `lintr-ds-linting`, `lintr-local-context`,
+`lintr-ds-context`.
 
 ## Environment
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LINTR_BACKEND_URL` | `http://127.0.0.1:11434` | LLM backend root |
+| `LINTR_BACKEND_API_KEY` | — | Bearer token injected into backend requests |
 | `LINTR_HOST` | `127.0.0.1` | Listen host |
 | `LINTR_PORT` | `8099` | Listen port |
 | `LINTR_INTENSITY` | `mild` | Linting intensity (`off`/`mild`/`medium`/`high`) |
+| `LINTR_CONTEXT_INJECT` | `1` | Set to `0` to disable context injection at startup |
+| `LINTR_TOOL_REPAIR` | `1` | Set to `0` to disable tool JSON repair at startup |
 | `LINTR_DEBUG` | `0` | Set to `1` for verbose logging |
 | `CONTEXTSTORE_DB_PATH` | `./upgrade/contextstore.db` | Single-DB path |
 | `CONTEXTSTORE_DBS` | — | JSON map for multi-DB (`{"name":"path",...}`) |
@@ -110,9 +169,16 @@ ${LINTR_BACKEND_URL}/v1/*
 ## Debug
 
 ```bash
+curl http://127.0.0.1:8099/health
 curl http://127.0.0.1:8099/lintr/state
 curl http://127.0.0.1:8099/lintr/state/default
-curl http://127.0.0.1:8099/health   # includes active store names
+
+# Feature flags (read + live toggle)
+curl http://127.0.0.1:8099/lintr/features
+curl http://127.0.0.1:8099/lintr/features/oneline
+curl -X POST http://127.0.0.1:8099/lintr/features/context   # toggle context inject
+curl -X POST http://127.0.0.1:8099/lintr/features/linting   # cycle intensity
+curl -X POST http://127.0.0.1:8099/lintr/features/repair    # toggle JSON repair
 ```
 
 ## Architecture

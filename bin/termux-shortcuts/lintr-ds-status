@@ -1,0 +1,5 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Termux:Widget shortcut — status of DeepSeek linter-lm instance.
+# Copy to ~/.shortcuts/ on the Pixel.
+curl -sf https://comrade.taile6163a.ts.net:8452/lintr/features/oneline || printf 'LINTR-DS:DOWN'
+printf '\n'

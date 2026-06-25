@@ -1,0 +1,14 @@
+[Unit]
+Description=LinteR-LM proxy — DeepSeek API backend (port 8098)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/homelab/linter-lm
+EnvironmentFile=%h/homelab/linter-lm/.env.deepseek
+ExecStart=%h/homelab/linter-lm/.venv/bin/python server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

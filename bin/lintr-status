@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Print a one-line feature status for a linter-lm instance.
+# Usage: lintr-status [local|deepseek|<url>]
+#   local    (default) — http://127.0.0.1:8099
+#   deepseek           — http://127.0.0.1:8098
+#   <url>              — any explicit URL
+# Env: LINTR_CTL_URL overrides the instance arg entirely.
+#
+# i3status-rust: set command = "lintr-status" or "lintr-status deepseek"
+_url() {
+    if [ -n "$LINTR_CTL_URL" ]; then printf '%s' "$LINTR_CTL_URL"; return; fi
+    case "${1:-local}" in
+        local|l)     printf 'http://127.0.0.1:8099' ;;
+        deepseek|ds) printf 'http://127.0.0.1:8098' ;;
+        *)           printf '%s' "$1" ;;
+    esac
+}
+URL=$(_url "$1")
+curl -sf "${URL}/lintr/features/oneline" || printf 'LINTR:DOWN'
+printf '\n'

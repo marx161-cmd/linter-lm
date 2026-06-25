@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
+from dotenv import load_dotenv
+load_dotenv()  # must be before any os.environ.get() calls below
+
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 import httpx
 import uvicorn
 
@@ -15,8 +19,25 @@ from upgrade.contextstore import ContextStore
 
 
 BACKEND_URL = os.environ.get("LINTR_BACKEND_URL", "http://127.0.0.1:11434").rstrip("/")
+BACKEND_API_KEY = os.environ.get("LINTR_BACKEND_API_KEY", "")
 INTENSITY = os.environ.get("LINTR_INTENSITY", "mild")
 DEBUG = os.environ.get("LINTR_DEBUG", "0") == "1"
+
+_INTENSITY_CYCLE = ["off", "mild", "medium", "high"]
+
+
+@dataclass
+class FeatureFlags:
+    context_inject: bool
+    tool_repair: bool
+    intensity: str
+
+
+flags = FeatureFlags(
+    context_inject=os.environ.get("LINTR_CONTEXT_INJECT", "1") != "0",
+    tool_repair=os.environ.get("LINTR_TOOL_REPAIR", "1") != "0",
+    intensity=INTENSITY,
+)
 
 # Multi-DB context stores — each store is a separate knowledge domain.
 # Configure via CONTEXTSTORE_DBS env var (JSON map name -> db_path):
@@ -36,8 +57,9 @@ else:
     )
     context_stores = {"default": ContextStore(db_path=_default_path)}
 
-app = FastAPI(title="LinteR-LM Proxy", version="0.2.0")
+app = FastAPI(title="LinteR-LM Proxy", version="0.3.0")
 engine = LintrEngine(intensity=INTENSITY)
+engine.tool_repair_enabled = flags.tool_repair
 
 if DEBUG:
     for name, store in context_stores.items():
@@ -45,12 +67,31 @@ if DEBUG:
         print(f"CONTEXT store '{name}': {len(files)} files loaded")
 
 
+# -- feature flag helpers ----------------------------------------------------
+
+def _features_dict() -> dict[str, Any]:
+    return {
+        "context_inject": flags.context_inject,
+        "tool_repair": flags.tool_repair,
+        "intensity": flags.intensity,
+    }
+
+
+def _features_oneline() -> str:
+    ctx = "CTX:on" if flags.context_inject else "CTX:off"
+    lint = f"LINT:{flags.intensity}"
+    repair = "REPAIR:on" if flags.tool_repair else "REPAIR:off"
+    return f"{ctx} {lint} {repair}"
+
+
+# -- endpoints ---------------------------------------------------------------
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "backend_url": BACKEND_URL,
-        "intensity": INTENSITY,
+        "intensity": flags.intensity,
         "stores": list(context_stores.keys()),
     }
 
@@ -65,6 +106,40 @@ async def state_one(session_id: str) -> dict[str, Any]:
     return engine.debug_state(session_id)
 
 
+@app.get("/lintr/features")
+async def get_features() -> dict[str, Any]:
+    return _features_dict()
+
+
+@app.get("/lintr/features/oneline", response_class=PlainTextResponse)
+async def get_features_oneline() -> str:
+    return _features_oneline()
+
+
+@app.post("/lintr/features/context")
+async def toggle_context() -> dict[str, Any]:
+    flags.context_inject = not flags.context_inject
+    return _features_dict()
+
+
+@app.post("/lintr/features/repair")
+async def toggle_repair() -> dict[str, Any]:
+    flags.tool_repair = not flags.tool_repair
+    engine.tool_repair_enabled = flags.tool_repair
+    return _features_dict()
+
+
+@app.post("/lintr/features/linting")
+async def cycle_linting() -> dict[str, Any]:
+    try:
+        idx = _INTENSITY_CYCLE.index(flags.intensity)
+    except ValueError:
+        idx = 0
+    flags.intensity = _INTENSITY_CYCLE[(idx + 1) % len(_INTENSITY_CYCLE)]
+    engine.scrambler.intensity = flags.intensity
+    return _features_dict()
+
+
 @app.get("/v1/models")
 async def models(request: Request) -> Response:
     return await proxy_raw(request, "/v1/models")
@@ -76,8 +151,8 @@ async def chat_completions(request: Request) -> Response:
     session_id = conversation_id(payload)
     patched_payload = engine.begin_request(session_id, payload)
 
-    # Inject relevant context from all knowledge stores
-    patched_payload = await inject_context(patched_payload)
+    if flags.context_inject:
+        patched_payload = await inject_context(patched_payload)
 
     stream = bool(patched_payload.get("stream"))
     url = f"{BACKEND_URL}/v1/chat/completions"
@@ -103,6 +178,8 @@ async def chat_completions(request: Request) -> Response:
 async def proxy_other(path: str, request: Request) -> Response:
     return await proxy_raw(request, f"/v1/{path}")
 
+
+# -- pipeline helpers --------------------------------------------------------
 
 async def inject_context(payload: dict[str, Any]) -> dict[str, Any]:
     if DEBUG:
@@ -157,10 +234,6 @@ async def inject_context(payload: dict[str, Any]) -> dict[str, Any]:
     if DEBUG:
         print(f"CONTEXT injected {sum(len(r.hits) for _, r in all_hits)} hits from {len(all_hits)} stores")
     return patched
-
-
-
-# -- context management endpoints --
 
 
 async def proxy_raw(request: Request, path: str) -> Response:
@@ -240,7 +313,10 @@ def delta_text(delta: dict[str, Any]) -> str:
 
 def outbound_headers(request: Request) -> dict[str, str]:
     blocked = {"host", "content-length", "connection", "accept-encoding"}
-    return {k: v for k, v in request.headers.items() if k.lower() not in blocked}
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in blocked}
+    if BACKEND_API_KEY:
+        headers["authorization"] = f"Bearer {BACKEND_API_KEY}"
+    return headers
 
 
 if __name__ == "__main__":

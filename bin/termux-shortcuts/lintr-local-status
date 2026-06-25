@@ -1,0 +1,5 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Termux:Widget shortcut — status of local (Ollama) linter-lm instance.
+# Copy to ~/.shortcuts/ on the Pixel.
+curl -sf https://comrade.taile6163a.ts.net:8451/lintr/features/oneline || printf 'LINTR-LOCAL:DOWN'
+printf '\n'
