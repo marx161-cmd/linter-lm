@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, AsyncIterator
@@ -10,19 +11,48 @@ import httpx
 import uvicorn
 
 from lintr_core import LintrEngine, conversation_id
+from upgrade.contextstore import ContextStore
 
 
 BACKEND_URL = os.environ.get("LINTR_BACKEND_URL", "http://127.0.0.1:11434").rstrip("/")
 INTENSITY = os.environ.get("LINTR_INTENSITY", "mild")
 DEBUG = os.environ.get("LINTR_DEBUG", "0") == "1"
 
-app = FastAPI(title="LinteR-LM Proxy", version="0.1.0")
+# Multi-DB context stores — each store is a separate knowledge domain.
+# Configure via CONTEXTSTORE_DBS env var (JSON map name -> db_path):
+#   {"homelab":"/home/comrade/homelab/linter-lm/upgrade/homelab.db",
+#    "notes":"/home/comrade/homelab/linter-lm/upgrade/notes.db"}
+# If unset, falls back to a single default store at CONTEXTSTORE_DB_PATH.
+_raw_dbs = os.environ.get("CONTEXTSTORE_DBS", "")
+if _raw_dbs:
+    _db_map = json.loads(_raw_dbs)
+    context_stores: dict[str, ContextStore] = {
+        name: ContextStore(db_path=path) for name, path in _db_map.items()
+    }
+else:
+    _default_path = os.environ.get(
+        "CONTEXTSTORE_DB_PATH",
+        os.path.join(os.path.dirname(__file__), "upgrade", "contextstore.db"),
+    )
+    context_stores = {"default": ContextStore(db_path=_default_path)}
+
+app = FastAPI(title="LinteR-LM Proxy", version="0.2.0")
 engine = LintrEngine(intensity=INTENSITY)
+
+if DEBUG:
+    for name, store in context_stores.items():
+        files = store.list_files()
+        print(f"CONTEXT store '{name}': {len(files)} files loaded")
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "backend_url": BACKEND_URL, "intensity": INTENSITY}
+    return {
+        "ok": True,
+        "backend_url": BACKEND_URL,
+        "intensity": INTENSITY,
+        "stores": list(context_stores.keys()),
+    }
 
 
 @app.get("/lintr/state")
@@ -40,16 +70,15 @@ async def models(request: Request) -> Response:
     return await proxy_raw(request, "/v1/models")
 
 
-@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_other(path: str, request: Request) -> Response:
-    return await proxy_raw(request, f"/v1/{path}")
-
-
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> Response:
     payload = await request.json()
     session_id = conversation_id(payload)
     patched_payload = engine.begin_request(session_id, payload)
+
+    # Inject relevant context from all knowledge stores
+    patched_payload = await inject_context(patched_payload)
+
     stream = bool(patched_payload.get("stream"))
     url = f"{BACKEND_URL}/v1/chat/completions"
     headers = outbound_headers(request)
@@ -68,6 +97,70 @@ async def chat_completions(request: Request) -> Response:
         lint_non_streaming_response(session_id, data)
         return JSONResponse(content=data, status_code=resp.status_code)
     return Response(content=resp.content, status_code=resp.status_code, media_type=resp.headers.get("content-type"))
+
+
+@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_other(path: str, request: Request) -> Response:
+    return await proxy_raw(request, f"/v1/{path}")
+
+
+async def inject_context(payload: dict[str, Any]) -> dict[str, Any]:
+    if DEBUG:
+        print(f"CONTEXT inject_context called, stores={list(context_stores.keys())}")
+    if not context_stores:
+        return payload
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return payload
+
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+    if last_user_idx is None:
+        return payload
+
+    user_msg = messages[last_user_idx]
+    query_text = user_msg.get("content", "")
+    if not isinstance(query_text, str) or not query_text.strip():
+        return payload
+
+    if DEBUG:
+        print(f"CONTEXT querying '{query_text[:80]}...' across {len(context_stores)} stores")
+
+    all_hits = []
+    for name, store in context_stores.items():
+        result = await store.retrieve(query_text)
+        if result.hits:
+            all_hits.append((name, result))
+
+    if not all_hits:
+        return payload
+
+    context_blocks = []
+    for store_name, result in all_hits:
+        for hit in result.hits:
+            context_blocks.append(
+                f"[{store_name}: {hit.name} (score={hit.best_similarity:.3f})]\n{hit.content}"
+            )
+    context_text = "\n\n---\n\n".join(context_blocks)
+    augmented = (
+        f"<context>\nThe following relevant information is available:\n\n"
+        f"{context_text}\n</context>\n\n{query_text}"
+    )
+
+    patched = dict(payload)
+    patched["messages"] = list(messages)
+    patched["messages"][last_user_idx] = {**user_msg, "content": augmented}
+    if DEBUG:
+        print(f"CONTEXT injected {sum(len(r.hits) for _, r in all_hits)} hits from {len(all_hits)} stores")
+    return patched
+
+
+
+# -- context management endpoints --
 
 
 async def proxy_raw(request: Request, path: str) -> Response:
