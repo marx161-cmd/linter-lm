@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import random
 import re
@@ -35,6 +36,10 @@ class SessionState:
         self.think_tail = ""
         self.visible_window = ""
         self.recent_sentences.clear()
+        # V1 known limitation: detections_in_response resets every request so
+        # escalation history is lost between turns. A session that oscillates
+        # between clean and degraded turns will never accumulate past "medium"
+        # without the user manually cycling linting intensity. Tracked for V2.
         self.detections_in_response = 0
 
     def record(self, intervention: Intervention) -> None:
@@ -176,7 +181,9 @@ class SamplerScrambler:
         if self.intensity == "off":
             return None
         tier = self.intensity
-        if count >= 2 and tier == "mild":
+        if count >= 4 and tier in ("mild", "medium"):
+            tier = "high"
+        elif count >= 2 and tier == "mild":
             tier = "medium"
         spec = self.ranges[tier]
         if spec is None:
@@ -403,5 +410,10 @@ def conversation_id(payload: dict[str, Any]) -> str:
         if isinstance(first, dict):
             content = str(first.get("content", ""))
             if content:
-                return "hash:" + str(abs(hash(content)) % 1_000_000_000)
+                # hashlib instead of hash() — hash() is randomised per process
+                # via PYTHONHASHSEED and would assign a different session id to
+                # the same conversation after a proxy restart.
+                return "hash:" + hashlib.sha256(
+                    content.encode(), usedforsecurity=False
+                ).hexdigest()[:16]
     return "default"
