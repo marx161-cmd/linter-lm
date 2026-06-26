@@ -16,6 +16,7 @@ import uvicorn
 
 from lintr_core import LintrEngine, conversation_id
 from upgrade.contextstore import ContextStore
+from upgrade.chroma_backend import ChromaContextStore
 
 
 BACKEND_URL = os.environ.get("LINTR_BACKEND_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -39,23 +40,24 @@ flags = FeatureFlags(
     intensity=INTENSITY,
 )
 
-# Multi-DB context stores — each store is a separate knowledge domain.
-# Configure via CONTEXTSTORE_DBS env var (JSON map name -> db_path):
-#   {"homelab":"/home/comrade/homelab/linter-lm/upgrade/homelab.db",
-#    "notes":"/home/comrade/homelab/linter-lm/upgrade/notes.db"}
-# If unset, falls back to a single default store at CONTEXTSTORE_DB_PATH.
-_raw_dbs = os.environ.get("CONTEXTSTORE_DBS", "")
-if _raw_dbs:
-    _db_map = json.loads(_raw_dbs)
-    context_stores: dict[str, ContextStore] = {
-        name: ContextStore(db_path=path) for name, path in _db_map.items()
-    }
+# Context store backend selection:
+#   CONTEXTSTORE_BACKEND=chroma  → query mcp-hub's ChromaDB (recommended, no ingestion needed)
+#   CONTEXTSTORE_BACKEND=sqlite  → local SQLite stores (requires manual ingestion via upgrade.cli)
+_backend = os.environ.get("CONTEXTSTORE_BACKEND", "chroma").lower()
+if _backend == "chroma":
+    context_stores: dict[str, Any] = {"chroma": ChromaContextStore()}
 else:
-    _default_path = os.environ.get(
-        "CONTEXTSTORE_DB_PATH",
-        os.path.join(os.path.dirname(__file__), "upgrade", "contextstore.db"),
-    )
-    context_stores = {"default": ContextStore(db_path=_default_path)}
+    # Legacy SQLite multi-DB: CONTEXTSTORE_DBS = '{"name":"/path/to.db",...}'
+    _raw_dbs = os.environ.get("CONTEXTSTORE_DBS", "")
+    if _raw_dbs:
+        _db_map = json.loads(_raw_dbs)
+        context_stores = {name: ContextStore(db_path=path) for name, path in _db_map.items()}
+    else:
+        _default_path = os.environ.get(
+            "CONTEXTSTORE_DB_PATH",
+            os.path.join(os.path.dirname(__file__), "upgrade", "contextstore.db"),
+        )
+        context_stores = {"default": ContextStore(db_path=_default_path)}
 
 app = FastAPI(title="LinteR-LM Proxy", version="0.3.0")
 engine = LintrEngine(intensity=INTENSITY)
