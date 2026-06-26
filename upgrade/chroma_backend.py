@@ -30,27 +30,25 @@ CHROMA_COLLECTIONS = [
 DEFAULT_THRESHOLD = float(os.environ.get("CONTEXTSTORE_SIMILARITY_THRESHOLD", "0.5"))
 DEFAULT_TOP_K = int(os.environ.get("CONTEXTSTORE_TOP_K", "3"))
 CHARS_PER_TOKEN = 4
-MAX_LINE_CHARS = 6_000
+MAX_FILE_CHARS = int(os.environ.get("CONTEXTSTORE_MAX_FILE_CHARS", "50000"))
 
 
-def _read_lines(path: str, start_line: int, end_line: int) -> str:
-    lines: List[str] = []
+def _read_file(path: str) -> str:
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            for idx, line in enumerate(f, start=1):
-                if idx < start_line:
-                    continue
-                if idx > end_line:
-                    break
-                lines.append(line.rstrip("\n"))
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
-    text = "\n".join(lines)
-    return text[:MAX_LINE_CHARS]
+    return text[:MAX_FILE_CHARS]
 
 
 class ChromaContextStore:
-    """Retrieves context chunks from the mcp-hub ChromaDB collections."""
+    """Retrieves context from the mcp-hub ChromaDB collections.
+
+    Chunks are used only for matching. When a chunk from file X clears the
+    similarity threshold, the *entire file* is injected — same behaviour as
+    the original SQLite ContextStore. Multiple chunks from the same file
+    collapse to one hit (highest similarity wins).
+    """
 
     def __init__(self) -> None:
         self._client = None
@@ -83,14 +81,17 @@ class ChromaContextStore:
         except Exception:
             return empty
 
-        # Query all collections, merge by similarity
-        candidates: list[tuple[float, str, dict]] = []
+        # Query all collections; ask for more candidates so deduplication
+        # doesn't drop us below top_k unique files.
+        n_candidates = top_k * 4
+        best_per_file: dict[str, tuple[float, str]] = {}  # path -> (sim, col_name)
+
         for col_name in CHROMA_COLLECTIONS:
             try:
                 col = client.get_collection(col_name)
                 raw = col.query(
                     query_embeddings=[query_vector],
-                    n_results=top_k,
+                    n_results=n_candidates,
                     include=["metadatas", "distances"],
                 )
                 for meta, dist in zip(
@@ -101,24 +102,30 @@ class ChromaContextStore:
                         continue
                     # ChromaDB cosine distance: 0=identical → similarity = 1 - dist
                     sim = 1.0 - float(dist)
-                    if sim >= threshold:
-                        candidates.append((sim, col_name, meta))
+                    if sim < threshold:
+                        continue
+                    path = str(meta.get("path", ""))
+                    if not path:
+                        continue
+                    existing_sim, _ = best_per_file.get(path, (0.0, ""))
+                    if sim > existing_sim:
+                        best_per_file[path] = (sim, col_name)
             except Exception:
                 continue
 
-        candidates.sort(key=lambda x: -x[0])
+        # Sort unique files by best chunk similarity, take top_k
+        ranked = sorted(best_per_file.items(), key=lambda kv: -kv[1][0])
 
         hits: List[RetrievalHit] = []
         used_tokens = 0
         truncated = False
 
-        for sim, col_name, meta in candidates[:top_k]:
-            path = str(meta.get("path", ""))
-            if not path or not Path(path).exists():
+        for path, (sim, col_name) in ranked:
+            if len(hits) >= top_k:
+                break
+            if not Path(path).exists():
                 continue
-            start = int(meta.get("start_line", 1))
-            end = int(meta.get("end_line", start))
-            text = _read_lines(path, start, end)
+            text = _read_file(path)
             if not text:
                 continue
             cost = max(1, len(text) // CHARS_PER_TOKEN)
@@ -126,8 +133,8 @@ class ChromaContextStore:
                 truncated = True
                 continue
             hits.append(RetrievalHit(
-                file_id=f"{col_name}:{path}:{start}",
-                name=f"{Path(path).name}:{start}-{end}",
+                file_id=f"{col_name}:{path}",
+                name=Path(path).name,
                 content=text,
                 best_similarity=round(sim, 4),
                 matched_chunk_index=0,
