@@ -30,7 +30,9 @@ CHROMA_COLLECTIONS = [
 DEFAULT_THRESHOLD = float(os.environ.get("CONTEXTSTORE_SIMILARITY_THRESHOLD", "0.5"))
 DEFAULT_TOP_K = int(os.environ.get("CONTEXTSTORE_TOP_K", "3"))
 CHARS_PER_TOKEN = 4
-MAX_FILE_CHARS = int(os.environ.get("CONTEXTSTORE_MAX_FILE_CHARS", "50000"))
+# Per-file ceiling: cap very large files so one file can't crowd out others.
+# 15K chars ≈ 3 750 tokens — comfortably fits any typical homelab doc/script.
+MAX_FILE_CHARS = int(os.environ.get("CONTEXTSTORE_MAX_FILE_CHARS", "15000"))
 
 
 def _read_file(path: str) -> str:
@@ -64,7 +66,7 @@ class ChromaContextStore:
         query_text: str,
         threshold: float = DEFAULT_THRESHOLD,
         top_k: int = DEFAULT_TOP_K,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
     ) -> RetrievalResult:
         preview = query_text[:80]
         empty = RetrievalResult(query_preview=preview, hits=[], tokens_estimate=0, truncated=False)
