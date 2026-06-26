@@ -18,3 +18,4 @@ build/
 coverage.xml
 .coverage
 upgrade/contextstore.db
+contextstore.db
